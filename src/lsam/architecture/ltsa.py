@@ -1,0 +1,2 @@
+class LTSAModel:
+    pass
