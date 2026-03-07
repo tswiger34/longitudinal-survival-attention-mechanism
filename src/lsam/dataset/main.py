@@ -1,2 +1,0 @@
-class LSAMDataSet:
-    pass
