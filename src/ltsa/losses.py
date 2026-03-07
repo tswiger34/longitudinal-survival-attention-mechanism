@@ -19,22 +19,18 @@ for identifying and aggregating the required functions to make this model work.
 
 """
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
 from torch import Tensor
-from ty_extensions import Unknown
+
+if TYPE_CHECKING:
+    pass
 
 
 def nll_loss(
-    hazards: Tensor,
-    S: Tensor | None,
-    Y: Tensor,
-    c: Tensor,
-    obs_times,
-    beta: float = 0.15,
-    eps: float = 1e-7,
+    hazards: Tensor, S: Tensor | None, Y: Tensor, c: Tensor, beta: float = 0.15, eps: float = 1e-7, **kwargs
 ):
     """_summary_
 
@@ -45,7 +41,6 @@ def nll_loss(
         S (Tensor): Tensor of survival scores for obs 1,2,...,k, should be the cumulative product of `1 - hazards`
         Y (Tensor): The ground truth tensor of obs 1,2,...,k
         c (Tensor): Tensor of censorship statuses for obs 1,2,...,k, values should be either 0 or 1
-        obs_times (_type_): _description_
         beta (float, optional): _description_. Defaults to 0.15.
         eps (float, optional): _description_. Defaults to 1e-7.
 
@@ -74,92 +69,110 @@ def nll_loss(
     return loss
 
 
-def ce_loss(
-    hazards: Tensor,
-    S: Tensor | None,
-    Y: Tensor,
-    c: Tensor,
-    obs_times=None,
-    beta: float = 0.15,
-    eps: float = 1e-7,
-):
-    """_summary_
+def ce_surv_loss(
+    hazards: Tensor, S: Tensor | None, Y: Tensor, c: Tensor, beta: float, eps: float = 1e-7, **kwargs
+) -> Tensor:
+    """Cross-Entropy survival loss function
 
     Args:
-        hazards (Tensor): _description_
-        S (Tensor): _description_
-        Y (Tensor): _description_
-        c (Tensor): _description_
-        obs_times (_type_, optional): _description_. Defaults to None.
+        hazards (Tensor): Tensor of hazard values for each obs 1,2,...,k
+        S (Tensor): Tensor of survival scores for obs 1,2,...,k, should be the cumulative product of `1 - hazards`
+        Y (Tensor): The ground truth tensor of obs 1,2,...,k
+        c (Tensor): Tensor of censorship statuses for obs 1,2,...,k, values should be either 0 or 1
         beta (float, optional): _description_. Defaults to 0.15.
         eps (float, optional): _description_. Defaults to 1e-7.
 
     Returns:
-        _type_: _description_
+        Tensor: Tensor of Cross-Entropy survival loss values for obs 1,2,...,k
+
+    *Steps*:
+        1. Calculate batch size
+        2. Flatten censorship (:arg:`c`) and ground truth (:arg:`Y`) tensors
+        3. If survival scores tensor (:arg:`S`) is `None`, compute it using :arg:`hazards` since  surival is the
+          cumulative product of 1 - hazards
+        4. Pad survival scores tensors for censored observations
+        5. Create a new tensor where the censor values are flipped to calculate loss values for censored
+          observations
     """
     batch_size: int = len(Y)
-    Y: Tensor = Y.view(batch_size, 1)  # ground truth bin, 1,2,...,k
-    c: Tensor = c.view(batch_size, 1).float()  # censorship status, 0 or 1
+    Y: Tensor = Y.view(batch_size, 1)
+    c: Tensor = c.view(batch_size, 1).float()
     if S is None:
-        S: Tensor = torch.cumprod(input=1 - hazards, dim=1)  # surival is cumulative product of 1 - hazards
+        S: Tensor = torch.cumprod(input=1 - hazards, dim=1)
 
     S_padded: Tensor = torch.cat(tensors=[torch.ones_like(input=c), S], dim=1)
+    c_flipped: Tensor = 1 - c
 
-    reg: Unknown | Tensor = -(1 - c) * (
+    reg: Tensor = c_flipped.neg() * (
         torch.log(input=torch.gather(input=S_padded, dim=1, index=Y) + eps)
         + torch.log(input=torch.gather(input=hazards, dim=1, index=Y).clamp(min=eps))
     )
-    ce_l: Unknown | Tensor = -c * torch.log(input=torch.gather(input=S, dim=1, index=Y).clamp(min=eps)) - (
-        1 - c
+    ce_l: Tensor = c.neg() * torch.log(input=torch.gather(input=S, dim=1, index=Y).clamp(min=eps)) - (
+        c_flipped
     ) * torch.log(input=1 - torch.gather(input=S, dim=1, index=Y).clamp(min=eps))
-    loss: Unknown | Tensor = (1 - beta) * ce_l + beta * reg
-    loss: Unknown | Tensor = loss.mean()
+    loss: Tensor = (1 - beta) * ce_l + beta * reg
+    loss: Tensor = loss.mean()
 
     return loss
+
+
+def cox_surv_loss(
+    hazards: torch.Tensor, S: torch.Tensor, Y, c, beta, device: torch.device | None, **kwargs
+) -> Tensor:
+    """_summary_
+
+    Args:
+        hazards (torch.Tensor): _description_
+        S (torch.Tensor): _description_
+        Y (_type_): _description_
+        c (_type_): _description_
+        beta (_type_): _description_
+        device (torch.device | None): _description_
+
+    Returns:
+        Tensor: _description_
+
+    # This calculation credit to Travers Ching https://github.com/traversc/cox-nnet
+    # Cox-nnet: An artificial neural network method for prognosis prediction of high-throughput omics data
+    """
+    current_batch_len: int = len(S)
+    R_mat: np.ndarray[tuple[Any, ...], np.dtype[Any]] = np.zeros(
+        shape=[current_batch_len, current_batch_len], dtype=int
+    )
+    for i in range(current_batch_len):
+        for j in range(current_batch_len):
+            R_mat[i, j] = S[j] >= S[i]
+
+    R_mat: Tensor = torch.FloatTensor(R_mat).to(device=device)
+    theta: Tensor = hazards.reshape(-1)
+    exp_theta: Tensor = torch.exp(input=theta)
+    loss_cox: Tensor = torch.mean(
+        input=(theta - torch.log(input=torch.sum(input=exp_theta * R_mat, dim=1))) * (1 - c)
+    ).neg()
+
+    return loss_cox
 
 
 class CrossEntropySurvLoss(object):
     """Cross entropy survival loss object"""
 
-    def __init__(self, beta=0.15):
-        self.beta: Unknown | float = beta
+    def __init__(self, beta: float = 0.15):
+        self.beta: float = beta
 
-    def __call__(self, hazards, S, Y, c, obs_times, beta=None):
-        if beta is None:
-            return ce_loss(hazards, S, Y, c, obs_times, beta=self.beta)
-        else:
-            return ce_loss(hazards, S, Y, c, obs_times, beta=beta)
+    def __call__(self, hazards, S, Y, c, beta: float | None = None, **kwargs):
+        beta: float = beta or self.beta
+        return ce_surv_loss(hazards, S, Y, c, beta=beta)
 
 
 class NLLSurvLoss(object):
     def __init__(self, beta: float = 0.15):
         self.beta: float = beta
 
-    def __call__(self, hazards, S, Y, c, obs_times, beta=None):
-        if beta is None:
-            return nll_loss(hazards, S, Y, c, obs_times, beta=self.beta)
-        else:
-            return nll_loss(hazards, S, Y, c, obs_times, beta=beta)
+    def __call__(self, hazards, S, Y, c, beta=None, **kwargs):
+        beta: float = beta or self.beta
+        return nll_loss(hazards, S, Y, c, beta=beta)
 
 
 class CoxSurvLoss(object):
     def __call__(hazards: torch.Tensor, S: torch.Tensor, Y, c, beta, device: torch.device | None, **kwargs):
-        # This calculation credit to Travers Ching https://github.com/traversc/cox-nnet
-        # Cox-nnet: An artificial neural network method for prognosis prediction of high-throughput omics data
-
-        current_batch_len: int = len(S)
-        R_mat: np.ndarray[tuple[Any, ...], np.dtype[Any]] = np.zeros(
-            shape=[current_batch_len, current_batch_len], dtype=int
-        )
-        for i in range(current_batch_len):
-            for j in range(current_batch_len):
-                R_mat[i, j] = S[j] >= S[i]
-
-        R_mat: Tensor = torch.FloatTensor(R_mat).to(device)
-        theta: Tensor = hazards.reshape(-1)
-        exp_theta: Tensor = torch.exp(theta)
-        loss_cox: Unknown | Tensor = -torch.mean(
-            input=(theta - torch.log(input=torch.sum(input=exp_theta * R_mat, dim=1))) * (1 - c)
-        )
-
-        return loss_cox
+        return cox_surv_loss(hazards=hazards, S=S, Y=Y, c=c, beta=beta, device=device, **kwargs)
