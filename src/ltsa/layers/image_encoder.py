@@ -13,7 +13,7 @@ _TEncoderArchitecture = TypeVar("_TEncoderArchitecture", bound=ModelArchitecture
 
 
 class ImageEncoder(Protocol[_TEncoderArchitecture]):
-    weights = "IMAGENET1K_V1"
+    weights: str = "IMAGENET1K_V1"
     model_type: type[_TEncoderArchitecture]
 
     def __init__(self):

@@ -19,20 +19,17 @@ for identifying and aggregating the required functions to make this model work.
 
 """
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 import torch
 from torch import Tensor
 
-if TYPE_CHECKING:
-    pass
-
 
 def nll_loss(
     hazards: Tensor, S: Tensor | None, Y: Tensor, c: Tensor, beta: float = 0.15, eps: float = 1e-7, **kwargs
 ):
-    """_summary_
+    """Negative log-likelihood survival loss function
 
     S(-1) = 0, all patients are alive from (-inf, 0) by definition
 
@@ -79,7 +76,7 @@ def ce_surv_loss(
         S (Tensor): Tensor of survival scores for obs 1,2,...,k, should be the cumulative product of `1 - hazards`
         Y (Tensor): The ground truth tensor of obs 1,2,...,k
         c (Tensor): Tensor of censorship statuses for obs 1,2,...,k, values should be either 0 or 1
-        beta (float, optional): _description_. Defaults to 0.15.
+        beta (float, optional): _description_.
         eps (float, optional): _description_. Defaults to 1e-7.
 
     Returns:
@@ -119,7 +116,10 @@ def ce_surv_loss(
 def cox_surv_loss(
     hazards: torch.Tensor, S: torch.Tensor, Y, c, beta, device: torch.device | None, **kwargs
 ) -> Tensor:
-    """_summary_
+    """Cox survival loss function
+
+    This calculation credit to Travers Ching https://github.com/traversc/cox-nnet
+    Cox-nnet: An artificial neural network method for prognosis prediction of high-throughput omics data
 
     Args:
         hazards (torch.Tensor): _description_
@@ -131,9 +131,6 @@ def cox_surv_loss(
 
     Returns:
         Tensor: _description_
-
-    # This calculation credit to Travers Ching https://github.com/traversc/cox-nnet
-    # Cox-nnet: An artificial neural network method for prognosis prediction of high-throughput omics data
     """
     current_batch_len: int = len(S)
     R_mat: np.ndarray[tuple[Any, ...], np.dtype[Any]] = np.zeros(
@@ -165,6 +162,8 @@ class CrossEntropySurvLoss(object):
 
 
 class NLLSurvLoss(object):
+    """Negative log-likelihood survival loss object"""
+
     def __init__(self, beta: float = 0.15):
         self.beta: float = beta
 
@@ -174,5 +173,7 @@ class NLLSurvLoss(object):
 
 
 class CoxSurvLoss(object):
+    """Cox survival loss object"""
+
     def __call__(hazards: torch.Tensor, S: torch.Tensor, Y, c, beta, device: torch.device | None, **kwargs):
         return cox_surv_loss(hazards=hazards, S=S, Y=Y, c=c, beta=beta, device=device, **kwargs)
