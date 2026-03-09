@@ -1,48 +1,85 @@
-"""Loss functions intended to be used when performing survival analysis research using the LTSA model
+"""Survival loss functions used by the LTSA training pipeline.
 
-Credit to
-[mahmoodlab](https://github.com/mahmoodlab/MCAT/blob/b9cca63be83c67de7f95308d54a58f80b78b0da1/utils/utils.py) for
-creating the python implementations of these loss functions and
-[bionlplab](https://github.com/bionlplab/longitudinal_transformer_for_survival_analysis/blob/main/src/losses.py)
-for identifying and aggregating the required functions to make this model work.
+This module provides discrete-time and Cox-style losses for right-censored
+survival analysis:
 
-## Functions
+- `nll_loss`: negative log-likelihood for discrete hazard predictions.
+- `ce_surv_loss`: cross-entropy-style survival loss with an NLL-style
+  regularization term.
+- `cox_surv_loss`: Cox partial log-likelihood objective.
 
-- **nll_loss**:
-- **ce_loss**:
+It also exposes callable wrapper classes (`NLLSurvLoss`, `CrossEntropySurvLoss`, and `CoxSurvLoss`) to support
+object-style loss configuration in training code.
 
-## Classes
+Implementation credit:
+- Mahmood Lab MCAT utilities:
+  https://github.com/mahmoodlab/MCAT/blob/b9cca63be83c67de7f95308d54a58f80b78b0da1/utils/utils.py
+- BioNLP Lab longitudinal transformer survival repository:
+  https://github.com/bionlplab/longitudinal_transformer_for_survival_analysis/blob/main/src/losses.py
 
-- **CrossEntropySurvLoss**:
-- **NLLSurvLoss**:
-- **CoxSurvLoss**:
-
+Tensor conventions:
+- `hazards`: per-bin hazard probabilities, shape `(batch_size, num_time_bins)`.
+- `S`: per-bin survival probabilities, shape `(batch_size, num_time_bins)`; computed internally when optional in
+  discrete-time losses.
+- `Y`: discrete event/censor bin indices, shape `(batch_size,)` or `(batch_size, 1)`.
+- `c`: censoring indicator (`0` observed event, `1` censored), shape `(batch_size,)` or `(batch_size, 1)`.
 """
 
 from typing import Any
 
 import numpy as np
 import torch
-from torch import Tensor
+from torch import Tensor, device
 
 
 def nll_loss(
     hazards: Tensor, S: Tensor | None, Y: Tensor, c: Tensor, beta: float = 0.15, eps: float = 1e-7, **kwargs
 ):
-    """Negative log-likelihood survival loss function
+    """Negative log-likelihood survival loss for discrete-time survival models.
 
-    S(-1) = 0, all patients are alive from (-inf, 0) by definition
+    This function computes the negative log-likelihood (NLL) loss for discrete-time survival analysis. The model
+    predicts hazard probabilities for each time interval, and the loss evaluates how well those predicted hazards
+    match the observed event times and censoring indicators.
+
+    The loss combines contributions from:
+    - **Uncensored observations**: log-likelihood of surviving up to the
+      event time and failing at that interval.
+    - **Censored observations**: log-likelihood of surviving beyond the
+      censoring interval.
 
     Args:
-        hazards (Tensor): Tensor of hazard scores for each obs 1,2,...,k
-        S (Tensor): Tensor of survival scores for obs 1,2,...,k, should be the cumulative product of `1 - hazards`
-        Y (Tensor): The ground truth tensor of obs 1,2,...,k
-        c (Tensor): Tensor of censorship statuses for obs 1,2,...,k, values should be either 0 or 1
-        beta (float, optional): _description_. Defaults to 0.15.
-        eps (float, optional): _description_. Defaults to 1e-7.
+        hazards (Tensor):
+            Predicted hazard probabilities for each observation and time bin. The shape should be
+            `(batch_size, num_time_bins)` and the values should be in the range `[0, 1]`
+
+        S (Tensor):
+            Survival probabilities corresponding to `hazards`. Shape `(batch_size, num_time_bins)`. Should equal
+            the cumulative product of `(1 - hazards)` along the time dimension. If `None`, then computed internally
+
+        Y (Tensor):
+            Ground-truth event time indices for each observation. Each value indicates the discrete time
+            bin in which the event or censoring occurred. Shape should be `(batch_size,)` or `(batch_size, 1)`
+
+        c (Tensor):
+            Censoring indicator for each observation where:
+                - ``0`` = event observed
+                - ``1`` = right-censored
+
+            Shape ``(batch_size,)`` or ``(batch_size, 1)``.
+        beta (float, optional):
+            Weight applied to the uncensored loss component. This can help stabilize training
+            by emphasizing event observations relative to censored observations. Defaults to `0.15`
+
+        eps (float, optional):
+            Small constant used to clamp probabilities before taking the logarithm, preventing numerical
+            instability from `log(0)`. Defaults to `1e-7`.
+
+        **kwargs:
+            Additional keyword arguments included for API compatibility. These values are ignored.
 
     Returns:
-        Tensor: _description_
+        Tensor: Scalar tensor containing the mean negative log-likelihood loss across the batch.
+
     """
     batch_size: int = len(Y)
     Y: Tensor = Y.view(batch_size, 1)
@@ -69,27 +106,58 @@ def nll_loss(
 def ce_surv_loss(
     hazards: Tensor, S: Tensor | None, Y: Tensor, c: Tensor, beta: float, eps: float = 1e-7, **kwargs
 ) -> Tensor:
-    """Cross-Entropy survival loss function
+    """Cross-entropy survival loss for discrete-time survival models.
+
+    This loss function combines a cross-entropy formulation of survival likelihood with a regularization component
+    derived from the negative log-likelihood of the discrete hazard formulation.
+
+    The loss consists of two components:
+
+    1. **Cross-entropy survival term (`ce_l`)**
+       - For censored observations: encourages the model to assign high
+         survival probability at the censoring time.
+       - For uncensored observations: encourages the model to assign high
+         probability of failure at the observed event interval.
+
+    2. **Regularization term (`reg`)**
+       - Equivalent to the discrete hazard negative log-likelihood used in
+         standard survival modeling.
+
+    The parameter ``beta`` controls the contribution of the regularization component relative to the cross-entropy
+    survival term.
 
     Args:
-        hazards (Tensor): Tensor of hazard values for each obs 1,2,...,k
-        S (Tensor): Tensor of survival scores for obs 1,2,...,k, should be the cumulative product of `1 - hazards`
-        Y (Tensor): The ground truth tensor of obs 1,2,...,k
-        c (Tensor): Tensor of censorship statuses for obs 1,2,...,k, values should be either 0 or 1
-        beta (float, optional): _description_.
-        eps (float, optional): _description_. Defaults to 1e-7.
+        hazards (Tensor):
+            Predicted hazard probabilities for each observation and time bin. The shape should be
+            `(batch_size, num_time_bins)` and the values should be in the range `[0, 1]`
+
+        S (Tensor):
+            Survival probabilities corresponding to `hazards`. Shape `(batch_size, num_time_bins)`. Should equal
+            the cumulative product of `(1 - hazards)` along the time dimension. If `None`, then computed internally
+
+        Y (Tensor):
+            Ground-truth event time indices for each observation. Each value indicates the discrete time
+            bin in which the event or censoring occurred. Shape should be `(batch_size,)` or `(batch_size, 1)`
+
+        c (Tensor):
+            Censoring indicator for each observation where:
+                - ``0`` = event observed
+                - ``1`` = right-censored
+
+            Shape ``(batch_size,)`` or ``(batch_size, 1)``.
+        beta (float, optional):
+            Weight applied to the uncensored loss component. This can help stabilize training
+            by emphasizing event observations relative to censored observations. Defaults to `0.15`
+
+        eps (float, optional):
+            Small constant used to clamp probabilities before taking the logarithm, preventing numerical
+            instability from `log(0)`. Defaults to `1e-7`.
+
+        **kwargs:
+            Additional keyword arguments included for API compatibility. These values are ignored.
 
     Returns:
-        Tensor: Tensor of Cross-Entropy survival loss values for obs 1,2,...,k
-
-    *Steps*:
-        1. Calculate batch size
-        2. Flatten censorship (:arg:`c`) and ground truth (:arg:`Y`) tensors
-        3. If survival scores tensor (:arg:`S`) is `None`, compute it using :arg:`hazards` since  surival is the
-          cumulative product of 1 - hazards
-        4. Pad survival scores tensors for censored observations
-        5. Create a new tensor where the censor values are flipped to calculate loss values for censored
-          observations
+        Tensor: Scalar tensor containing the mean cross-entropy survival loss across the batch.
     """
     batch_size: int = len(Y)
     Y: Tensor = Y.view(batch_size, 1)
@@ -113,24 +181,21 @@ def ce_surv_loss(
     return loss
 
 
-def cox_surv_loss(
-    hazards: torch.Tensor, S: torch.Tensor, Y, c, beta, device: torch.device | None, **kwargs
-) -> Tensor:
-    """Cox survival loss function
+def cox_surv_loss(hazards: Tensor, S: Tensor, c: Tensor, device: device | None, **kwargs) -> Tensor:
+    """Cox proportional hazards loss function for neural-network-based survival models.
 
     This calculation credit to Travers Ching https://github.com/traversc/cox-nnet
     Cox-nnet: An artificial neural network method for prognosis prediction of high-throughput omics data
 
     Args:
-        hazards (torch.Tensor): _description_
-        S (torch.Tensor): _description_
-        Y (_type_): _description_
-        c (_type_): _description_
-        beta (_type_): _description_
-        device (torch.device | None): _description_
+        hazards (Tensor): Tensor of hazard values for each obs 1,2,...,k
+        S (Tensor): Tensor of survival scores for obs 1,2,...,k, should be the cumulative product of `1 - hazards`
+        c (Tensor): Tensor of censorship statuses for obs 1,2,...,k, values should be either 0 or 1
+        device (device | None): Optionally provide the device being used for computing
 
     Returns:
-        Tensor: _description_
+        Tensor: Scalar tensor representing the mean negative Cox partial log-likelihood across the batch.
+
     """
     current_batch_len: int = len(S)
     R_mat: np.ndarray[tuple[Any, ...], np.dtype[Any]] = np.zeros(
@@ -173,7 +238,22 @@ class NLLSurvLoss(object):
 
 
 class CoxSurvLoss(object):
-    """Cox survival loss object"""
+    """Cox survival loss object, `__call__` calls the `cox_surv_loss` function
 
-    def __call__(hazards: torch.Tensor, S: torch.Tensor, Y, c, beta, device: torch.device | None, **kwargs):
-        return cox_surv_loss(hazards=hazards, S=S, Y=Y, c=c, beta=beta, device=device, **kwargs)
+    Args:
+        hazards (Tensor): Tensor of hazard values for each obs 1,2,...,k
+        S (Tensor): Tensor of survival scores for obs 1,2,...,k, should be the cumulative product of `1 - hazards`
+        c (Tensor): Tensor of censorship statuses for obs 1,2,...,k, values should be either 0 or 1
+        device (device | None): Optionally provide the device being used for computing
+
+    Notes
+    -----
+    - The risk set matrix is constructed such that R[i, j] = 1 if subject j is still at risk at time S[i]
+      (i.e., S[j] >= S[i]), otherwise 0
+    - The implementation assumes right-censored survival data
+    - This loss function is differentiable and suitable for optimization via standard gradient-based training in
+      PyTorch
+    """
+
+    def __call__(hazards: Tensor, S: Tensor, c, device: device | None, **kwargs):
+        return cox_surv_loss(hazards=hazards, S=S, c=c, device=device, **kwargs)
