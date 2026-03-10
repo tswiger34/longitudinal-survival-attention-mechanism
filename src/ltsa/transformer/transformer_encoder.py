@@ -6,9 +6,8 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.nn import Dropout, LayerNorm, Linear, Module, MultiheadAttention
 from torch.nn.modules.container import ModuleList
-from ty_extensions import Unknown
 
-from ltsa.layers.transformer_utils import get_activation_fn, get_clones
+from ltsa.transformer.transformer_utils import get_activation_fn, get_clones
 
 
 class TransformerEncoder(Module):
@@ -55,7 +54,7 @@ class TransformerEncoder(Module):
         src_key_padding_mask: Optional[Tensor] = None,
         is_causal: Optional[bool] = None,
         need_weights: Optional[bool] = False,
-    ) -> tuple[Tensor, list]:
+    ) -> tuple[Tensor, list[Tensor]]:
         r"""Pass the input through the encoder layers in turn.
 
         Args:
@@ -169,7 +168,7 @@ class TransformerEncoder(Module):
 
         is_causal: bool = make_causal
 
-        attn_maps: list[Unknown] = []
+        attn_maps: list[Tensor] = []
         for mod in self.layers:
             output, attn_map = mod(
                 output,

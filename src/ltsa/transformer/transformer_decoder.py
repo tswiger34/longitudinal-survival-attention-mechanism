@@ -10,7 +10,7 @@ from torch.nn.modules.linear import Linear
 from torch.nn.modules.module import Module
 from torch.nn.modules.normalization import LayerNorm
 
-from ltsa.layers.transformer_utils import get_activation_fn, get_clones
+from ltsa.transformer.transformer_utils import get_activation_fn, get_clones
 
 
 class TransformerDecoder(Module):

@@ -7,8 +7,8 @@ from torch.nn.init import xavier_uniform_
 from torch.nn.modules.module import Module
 from torch.nn.modules.normalization import LayerNorm
 
-from ltsa.layers.transformer_decoder import TransformerDecoder, TransformerDecoderLayer
-from ltsa.layers.transformer_encoder import TransformerEncoder, TransformerEncoderLayer
+from ltsa.transformer.transformer_decoder import TransformerDecoder, TransformerDecoderLayer
+from ltsa.transformer.transformer_encoder import TransformerEncoder, TransformerEncoderLayer
 
 ### BASED ON https://github.com/pytorch/pytorch/issues/99304 ###
 
