@@ -1,11 +1,9 @@
-import copy
 from typing import Any, Callable, Optional, Union
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor, device
 from torch.nn.init import xavier_uniform_
-from torch.nn.modules.container import ModuleList
 from torch.nn.modules.module import Module
 from torch.nn.modules.normalization import LayerNorm
 
@@ -101,8 +99,10 @@ class Transformer(Module):
                 norm_first,
                 **factory_kwargs,
             )
-            decoder_norm = LayerNorm(d_model, eps=layer_norm_eps, device=device, dtype=dtype)
-            self.decoder = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm)
+            decoder_norm = LayerNorm(normalized_shape=d_model, eps=layer_norm_eps, device=device, dtype=dtype)
+            self.decoder = TransformerDecoder(
+                decoder_layer=decoder_layer, num_layers=num_decoder_layers, norm=decoder_norm
+            )
 
         self._reset_parameters()
 
@@ -169,17 +169,17 @@ class Transformer(Module):
             >>> output = transformer_model(src, tgt, src_mask=src_mask, tgt_mask=tgt_mask)
         """
 
-        is_batched = src.dim() == 3
-        if not self.batch_first and src.size(1) != tgt.size(1) and is_batched:
+        is_batched: bool = src.dim() == 3
+        if not self.batch_first and src.size(dim=1) != tgt.size(dim=1) and is_batched:
             raise RuntimeError("the batch number of src and tgt must be equal")
-        elif self.batch_first and src.size(0) != tgt.size(0) and is_batched:
+        elif self.batch_first and src.size(dim=0) != tgt.size(dim=0) and is_batched:
             raise RuntimeError("the batch number of src and tgt must be equal")
 
-        if src.size(-1) != self.d_model or tgt.size(-1) != self.d_model:
+        if src.size(dim=-1) != self.d_model or tgt.size(dim=-1) != self.d_model:
             raise RuntimeError("the feature number of src and tgt must be equal to d_model")
 
-        memory = self.encoder(src, mask=src_mask, src_key_padding_mask=src_key_padding_mask)
-        output = self.decoder(
+        memory: Tensor = self.encoder(src, mask=src_mask, src_key_padding_mask=src_key_padding_mask)
+        output: Tensor = self.decoder(
             tgt,
             memory,
             tgt_mask=tgt_mask,
@@ -194,25 +194,11 @@ class Transformer(Module):
         r"""Generate a square mask for the sequence. The masked positions are filled with float('-inf').
         Unmasked positions are filled with float(0.0).
         """
-        return torch.triu(torch.full((sz, sz), float("-inf"), device=device), diagonal=1)
+        return torch.triu(torch.full(size=(sz, sz), fill_value=float("-inf"), device=device), diagonal=1)
 
     def _reset_parameters(self):
         r"""Initiate parameters in the transformer model."""
 
         for p in self.parameters():
             if p.dim() > 1:
-                xavier_uniform_(p)
-
-
-def _get_clones(module, N):
-    # FIXME: copy.deepcopy() is not defined on nn.module
-    return ModuleList([copy.deepcopy(module) for i in range(N)])
-
-
-def _get_activation_fn(activation: str) -> Callable[[Tensor], Tensor]:
-    if activation == "relu":
-        return F.relu
-    elif activation == "gelu":
-        return F.gelu
-
-    raise RuntimeError("activation should be relu/gelu, not {}".format(activation))
+                xavier_uniform_(tensor=p)
