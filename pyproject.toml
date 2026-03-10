@@ -1,15 +1,20 @@
 [project]
-name = "longitudinal-survival-attention-mechanism"
+name = "ltsa"
 version = "0.1.0"
-description = "Add your description here"
+description = "A generalization of the LTSA model as proposed in Holste, Gregory, et al. 'Harnessing the power of longitudinal medical imaging for eye disease prognosis using Transformer-based sequence modeling.' npj Digital Medicine 7.1 (2024): 216."
 readme = "README.md"
 requires-python = ">=3.13"
+license = "MIT"
 dependencies = [
     "numpy>=2.4.2",
-    "pydantic>=2.12.5",
     "torch>=2.10.0",
     "torchvision>=0.25.0",
 ]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+]
+
 
 [dependency-groups]
 dev = [
@@ -17,3 +22,7 @@ dev = [
     "ruff>=0.15.5",
     "ty>=0.0.21",
 ]
+
+[build-system]
+requires = ["uv_build>=0.10.9,<0.11.0"]
+build-backend = "uv_build"
